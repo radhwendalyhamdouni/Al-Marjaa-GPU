@@ -1,0 +1,110 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# GitHub Actions - قالب المكتبات
+# ═══════════════════════════════════════════════════════════════════════════════
+# هذا الملف يجب وضعه في: .github/workflows/library.yml
+# في كل مستودع مكتبة (AI, Database, Network, Industrial, ONNX, GPU)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: Library CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # بناء واختبار
+  # ═══════════════════════════════════════════════════════════════════════════
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Check formatting
+        run: cargo fmt --check
+      
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+      
+      - name: Build
+        run: cargo build --release
+      
+      - name: Run tests
+        run: cargo test --release
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # إخطار النواة الأساسية عند الدفع
+  # ═══════════════════════════════════════════════════════════════════════════
+  notify-core:
+    name: Notify Core
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Get library info
+        id: lib-info
+        run: |
+          # استخراج اسم المكتبة من Cargo.toml
+          LIB_NAME=$(grep '^name = ' Cargo.toml | sed 's/name = "\(.*\)"/\1/')
+          LIB_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "name=${LIB_NAME}" >> $GITHUB_OUTPUT
+          echo "version=${LIB_VERSION}" >> $GITHUB_OUTPUT
+      
+      - name: Notify Core Repository
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CORE_REPO_TOKEN }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: 'radhwendalyhamdouni',
+              repo: 'Al-Marjaa-Core',
+              event_type: 'library-updated',
+              client_payload: {
+                library_name: '${{ steps.lib-info.outputs.name }}',
+                library_version: '${{ steps.lib-info.outputs.version }}',
+                library_repo: '${{ github.event.repository.html_url }}',
+                commit_sha: '${{ github.sha }}'
+              }
+            })
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # نشر على crates.io
+  # ═══════════════════════════════════════════════════════════════════════════
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Publish
+        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
